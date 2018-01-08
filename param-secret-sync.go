@@ -18,6 +18,38 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// left trim the string until the last slash char
+func getSecretNameFromParam(name string) string {
+	return name[strings.LastIndex(name, "/")+1:]
+}
+
+func crateSecret(client *kubernetes.Clientset, namespace string, param *ssm.Parameter) error {
+
+	// were going to use this name as both the secret object name and
+	// the .data key name (for lack of a better generic solution)
+	name := getSecretNameFromParam(*(param.Name))
+	secret := &apicorev1.Secret{
+		ObjectMeta: meta_v1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"heritage": "param-secret-sync",
+			},
+		},
+		Type: "Opaque",
+		StringData: map[string]string{
+			name: *param.Value,
+		},
+	}
+	log.Printf("creating secret [%s] in namespace [%s]", name, namespace)
+	_, err := client.CoreV1().Secrets(namespace).Create(secret)
+	if err != nil {
+		log.Printf("Failed to create secret [%s] in kubernetes[%v]",
+			getSecretNameFromParam(*(param.Name)), err)
+		return err
+	}
+	return nil
+
+}
 func copyParamPtrs(s *[]string) *[]*string {
 	t := make([]*string, len(*s))
 	for i := 0; i < len(*s); i++ {
@@ -25,6 +57,7 @@ func copyParamPtrs(s *[]string) *[]*string {
 	}
 	return &t
 }
+
 func main() {
 
 	log.Printf("param-secret-sync version %s", version.VERSION)
@@ -33,9 +66,10 @@ func main() {
 		err    error
 	)
 
-	paramList, kubeconfig := "", ""
+	paramList, kubeconfig, namespace := "", "", "default"
 	flag.StringVar(&paramList, "params", paramList, "comma separated list of param names")
 	flag.StringVar(&kubeconfig, "kubeconfig", kubeconfig, "kubeconfig file")
+	flag.StringVar(&namespace, "namespace", namespace, "target secret namespace")
 	flag.Parse()
 
 	if paramList == "" {
@@ -86,23 +120,7 @@ func main() {
 		log.Printf("  [%s]=>[%v]", *v.Name, *v.Value)
 	}
 
-	//client.secretLister.Secrets("nird").List(labels.Everything())
-	//Core().V1().Secrets()
-
-	secret := &apicorev1.Secret{
-		ObjectMeta: meta_v1.ObjectMeta{
-			Name: "test-secret",
-		},
-		Type:       "Opaque",
-		StringData: map[string]string{"test": "test"},
+	for _, v := range vals.Parameters {
+		err = crateSecret(client, namespace, v)
 	}
-
-	client.CoreV1().Secrets("nird").Create(secret)
-
-	//deployments, err := client.AppsV1beta1().Deployments("default").List(meta_v1.ListOptions{})
-
-	// for _, sec := range secrets.Items {
-	// 	fmt.Printf("secret %v\n", sec.Name)
-	// }
-
 }
