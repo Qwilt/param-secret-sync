@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -12,11 +11,30 @@ import (
 	"github.com/aws/aws-sdk-go/service/ssm"
 	"github.com/nirdothan/param-secret-sync/version"
 	apicorev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+func getParamsFromAWS(ssmSvc *ssm.SSM, paramNames *[]*string) *ssm.GetParametersOutput {
+	params := &ssm.GetParametersInput{
+		Names:          *paramNames,
+		WithDecryption: aws.Bool(true),
+	}
+	vals, err := ssmSvc.GetParameters(params)
+	if err != nil {
+		log.Printf("Failed to get parameters from AWS [%v]", err)
+		os.Exit(1)
+	}
+
+	log.Println("Returned values from AWS:")
+	for _, v := range vals.Parameters {
+		log.Printf("  [%s]=>[%v]", *v.Name, *v.Value)
+	}
+	return vals
+}
 
 // left trim the string until the last slash char
 func getSecretNameFromParam(name string) string {
@@ -25,9 +43,29 @@ func getSecretNameFromParam(name string) string {
 
 func crateSecret(client *kubernetes.Clientset, namespace string, param *ssm.Parameter) error {
 
-	// were going to use this name as both the secret object name and
-	// the .data key name (for lack of a better generic solution)
-	name := getSecretNameFromParam(*(param.Name))
+	// if the param name includes a '_', split the string and use the first part as
+	// secret name and the remainder as .data key
+	// otherwise use the full name as both the secret name and .data key
+	rawName := getSecretNameFromParam(*(param.Name))
+	i := strings.Index(rawName, "_")
+	var (
+		name string
+		key  string
+	)
+
+	// '_' not found
+	if i == -1 {
+		name, key = rawName, rawName
+	} else {
+		name = rawName[:i]
+		key = rawName[i+1:]
+	}
+
+	if len(name) < 1 || len(key) < 1 {
+		log.Printf("Illegal Parameter Value format [%s]", rawName)
+		os.Exit(1)
+	}
+
 	secret := &apicorev1.Secret{
 		ObjectMeta: meta_v1.ObjectMeta{
 			Name: name,
@@ -37,14 +75,27 @@ func crateSecret(client *kubernetes.Clientset, namespace string, param *ssm.Para
 		},
 		Type: "Opaque",
 		StringData: map[string]string{
-			name: *param.Value,
+			key: *param.Value,
 		},
 	}
 	log.Printf("creating secret [%s] in namespace [%s]", name, namespace)
 	_, err := client.CoreV1().Secrets(namespace).Create(secret)
 	if err != nil {
-		log.Printf("Failed to create secret [%s] in kubernetes[%v]",
-			getSecretNameFromParam(*(param.Name)), err)
+		if errors.IsAlreadyExists(err) {
+			log.Printf("Secret [%s] already exists. Deleteting and recreating", name)
+			err = client.CoreV1().Secrets(namespace).Delete(name, &meta_v1.DeleteOptions{})
+			if err != nil {
+				log.Fatal(err.Error())
+			}
+			_, err := client.CoreV1().Secrets(namespace).Create(secret)
+			if err != nil {
+				log.Fatal(err.Error())
+			}
+			return nil
+		}
+
+		log.Printf("Failed to create secret [%s] in kubernetes", name)
+
 		return err
 	}
 	return nil
@@ -73,8 +124,7 @@ func main() {
 	flag.Parse()
 
 	if paramList == "" {
-		fmt.Fprintf(os.Stderr, "No param names provided!")
-		os.Exit(1)
+		log.Fatal("No param names provided!")
 	}
 
 	ssmParams := strings.Split(paramList, ",")
@@ -90,8 +140,7 @@ func main() {
 		config, err = rest.InClusterConfig()
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error creating client: %v", err)
-		os.Exit(1)
+		log.Fatalf("error creating client: %v", err)
 	}
 	client := kubernetes.NewForConfigOrDie(config)
 	awsSession := session.Must(session.NewSession())
@@ -105,22 +154,11 @@ func main() {
 		log.Printf("  param buffer[%d]:[%s]\n", i, *p)
 	}
 
-	params := &ssm.GetParametersInput{
-		Names:          *paramPtrs,
-		WithDecryption: aws.Bool(true),
-	}
-	vals, err := ssmSvc.GetParameters(params)
-	if err != nil {
-		log.Printf("Failed to get parameters from AWS [%v]", err)
-		os.Exit(1)
-	}
-
-	log.Println("Returned values from AWS:")
-	for _, v := range vals.Parameters {
-		log.Printf("  [%s]=>[%v]", *v.Name, *v.Value)
-	}
-
-	for _, v := range vals.Parameters {
+	for _, v := range getParamsFromAWS(ssmSvc, paramPtrs).Parameters {
 		err = crateSecret(client, namespace, v)
+		if err != nil {
+			// change this line if you want to support ignoring failed secret creation
+			log.Fatalf("Error creating secret. Terminating")
+		}
 	}
 }
