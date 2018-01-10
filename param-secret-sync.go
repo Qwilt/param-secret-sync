@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"log"
 	"os"
@@ -41,30 +42,17 @@ func getSecretNameFromParam(name string) string {
 	return name[strings.LastIndex(name, "/")+1:]
 }
 
-func crateSecret(client *kubernetes.Clientset, namespace string, param *ssm.Parameter) error {
-
-	// if the param name includes a '_', split the string and use the first part as
-	// secret name and the remainder as .data key
-	// otherwise use the full name as both the secret name and .data key
-	rawName := getSecretNameFromParam(*(param.Name))
-	i := strings.Index(rawName, "_")
-	var (
-		name string
-		key  string
-	)
-
-	// '_' not found
-	if i == -1 {
-		name, key = rawName, rawName
-	} else {
-		name = rawName[:i]
-		key = rawName[i+1:]
+func parseParamVal(jsonString string) *map[string][]byte {
+	//var s map[string][]byte
+	s := make(map[string][]byte)
+	err := json.Unmarshal([]byte(jsonString), &s)
+	if err != nil {
+		log.Fatalf("Canot unmarshall json param [%s]\n%s", jsonString, err)
 	}
+	return &s
+}
 
-	if len(name) < 1 || len(key) < 1 {
-		log.Printf("Illegal Parameter Value format [%s]", rawName)
-		os.Exit(1)
-	}
+func crateSecret(client *kubernetes.Clientset, namespace string, name string, value *map[string][]byte, sectype apicorev1.SecretType) error {
 
 	secret := &apicorev1.Secret{
 		ObjectMeta: meta_v1.ObjectMeta{
@@ -73,24 +61,20 @@ func crateSecret(client *kubernetes.Clientset, namespace string, param *ssm.Para
 				"heritage": "param-secret-sync",
 			},
 		},
-		Type: "Opaque",
-		StringData: map[string]string{
-			key: *param.Value,
-		},
+		Type: sectype,
+		Data: *value,
 	}
+
 	log.Printf("creating secret [%s] in namespace [%s]", name, namespace)
 	_, err := client.CoreV1().Secrets(namespace).Create(secret)
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
-			log.Printf("Secret [%s] already exists. Deleteting and recreating", name)
-			err = client.CoreV1().Secrets(namespace).Delete(name, &meta_v1.DeleteOptions{})
+			log.Printf("Secret [%s] already exists. Trying to update, but some fields may be immutable", name)
+			_, err = client.CoreV1().Secrets(namespace).Update(secret)
 			if err != nil {
 				log.Fatal(err.Error())
 			}
-			_, err := client.CoreV1().Secrets(namespace).Create(secret)
-			if err != nil {
-				log.Fatal(err.Error())
-			}
+			log.Printf("Secret [%s] updated sucesffully", name)
 			return nil
 		}
 
@@ -98,6 +82,7 @@ func crateSecret(client *kubernetes.Clientset, namespace string, param *ssm.Para
 
 		return err
 	}
+	log.Printf("Secret [%s] created sucesffully", name)
 	return nil
 
 }
@@ -117,16 +102,17 @@ func main() {
 		err    error
 	)
 
-	paramList, kubeconfig, namespace := "", "", "default"
+	paramList, kubeconfig, namespace, sectype := "", "", "default", string(apicorev1.SecretTypeOpaque)
 	flag.StringVar(&paramList, "params", paramList, "comma separated list of param names")
 	flag.StringVar(&kubeconfig, "kubeconfig", kubeconfig, "kubeconfig file")
 	flag.StringVar(&namespace, "namespace", namespace, "target secret namespace")
+	flag.StringVar(&sectype, "type", sectype, "kubernetes secret type for (applies to the whole list of params)")
 	flag.Parse()
 
 	if paramList == "" {
 		log.Fatal("No param names provided!")
 	}
-
+	secretType := apicorev1.SecretType(sectype)
 	ssmParams := strings.Split(paramList, ",")
 
 	// Parse kubeconfig flag, KUBECONFIG env var or inClusterConfig
@@ -154,8 +140,26 @@ func main() {
 		log.Printf("  param buffer[%d]:[%s]\n", i, *p)
 	}
 
-	for _, v := range getParamsFromAWS(ssmSvc, paramPtrs).Parameters {
-		err = crateSecret(client, namespace, v)
+	paramResponse := getParamsFromAWS(ssmSvc, paramPtrs)
+
+	// the format of paramVals is:
+	// {   secret_name1:
+	//	         { key_11: val_11, key_12: val_12 },
+	//     secret_name2:
+	//           { key_21: val_21, key22: val_22 }
+	// }
+	paramVals := make(map[string]map[string][]byte)
+	// iterate over values, parse the and validate
+	for _, p := range paramResponse.Parameters {
+		//extract the last part of the name path to becode the secret name
+		key := getSecretNameFromParam(*p.Name)
+		tmp := *parseParamVal(*p.Value)
+		paramVals[key] = tmp
+	}
+
+	for k, v := range paramVals {
+
+		err = crateSecret(client, namespace, k, &v, secretType)
 		if err != nil {
 			// change this line if you want to support ignoring failed secret creation
 			log.Fatalf("Error creating secret. Terminating")
