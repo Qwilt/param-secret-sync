@@ -53,7 +53,7 @@ ifeq ($(ARCH),ppc64le)
     BASEIMAGE?=ppc64le/busybox
 endif
 
-IMAGE := $(REGISTRY)/$(BIN)-$(ARCH)
+IMAGE := $(REGISTRY)/$(BIN)
 
 BUILD_IMAGE ?= golang:1.9-alpine
 
