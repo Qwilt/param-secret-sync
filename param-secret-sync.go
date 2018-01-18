@@ -7,10 +7,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Qwilt/param-secret-sync/pkg/version"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ssm"
-	"github.com/nirdothan/param-secret-sync/pkg/version"
 	apicorev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"

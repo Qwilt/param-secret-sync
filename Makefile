@@ -16,7 +16,7 @@
 BIN := param-secret-sync
 
 # This repo's root import path (under GOPATH).
-PKG := github.com/nirdothan/param-secret-sync
+PKG := github.com/Qwilt/param-secret-sync
 
 # Where to push the docker image.
 REGISTRY ?= qwilt
