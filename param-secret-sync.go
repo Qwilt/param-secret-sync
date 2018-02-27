@@ -145,7 +145,7 @@ func main() {
 
 	kubeconfig, namespace := "", "default"
 	flag.Var(&params, "param", `param name and optional secret type separated by colon e.g.
-										/vault/mydockerlogin:kubernetes.io/dockercfg`)
+						/vault/mydockerlogin:kubernetes.io/dockercfg`)
 	flag.StringVar(&kubeconfig, "kubeconfig", kubeconfig, "kubeconfig file")
 	flag.StringVar(&namespace, "namespace", namespace, "target secret namespace")
 	flag.Parse()
@@ -153,7 +153,7 @@ func main() {
 	if len(params) == 0 {
 		log.Fatal("No param names provided!")
 	}
-	
+
 	// Parse kubeconfig flag, KUBECONFIG env var or inClusterConfig
 	if kubeconfig == "" {
 		kubeconfig = os.Getenv("KUBECONFIG")

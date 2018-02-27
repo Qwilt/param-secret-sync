@@ -17,11 +17,13 @@ The build system has been adopted from the awsome Tim Hockin and the Kubernetes 
 +  `-kubeconfig`  (or KUBECONFIG env var) kubeconfig file (needed for out of cluster execution)
 +  `-namespace` 
     	target secret namespace (default "default")
-+ `-params` 
-    	comma separated list of param names
-+  `-type` 
-    	kubernetes secret type for (applies to the whole list of params) (default "Opaque")
- 
++ `-param` 
+    	a full path of a ParameterStore secret, optionally followed by a colon and a kuberentes secret type
+		e.g. -param /vault/mydockerlogin:kubernetes.io/dockercfg
+		if secret type is omitted type is set to Opaque
+
+Multiple secrets can be processed in a single execution. Specify multiple `-param` flags and values.
+
 ## Building
 see 
 [https://github.com/thockin/go-build-template#building](https://github.com/thockin/go-build-template#building)
