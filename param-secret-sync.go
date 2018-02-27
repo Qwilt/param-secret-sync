@@ -52,8 +52,17 @@ func parseParamVal(jsonString string) *map[string][]byte {
 	return &s
 }
 
-func crateSecret(client *kubernetes.Clientset, namespace string, name string, value *map[string][]byte, sectype apicorev1.SecretType) error {
-
+func createSecret(client *kubernetes.Clientset, namespace string, name string, value *map[string][]byte, params secretDescriptors) error {
+	var secType apicorev1.SecretType
+	for _, p := range params {
+		if p.secshortname == name {
+			secType = p.sectype
+			break
+		}
+	}
+	if secType == "" {
+		log.Fatalf("can't find secret type for secret [%v]. This is probably a bug!", name)
+	}
 	secret := &apicorev1.Secret{
 		ObjectMeta: meta_v1.ObjectMeta{
 			Name: name,
@@ -61,7 +70,7 @@ func crateSecret(client *kubernetes.Clientset, namespace string, name string, va
 				"heritage": "param-secret-sync",
 			},
 		},
-		Type: sectype,
+		Type: secType,
 		Data: *value,
 	}
 
@@ -86,13 +95,45 @@ func crateSecret(client *kubernetes.Clientset, namespace string, name string, va
 	return nil
 
 }
-func copyParamPtrs(s *[]string) *[]*string {
-	t := make([]*string, len(*s))
-	for i := 0; i < len(*s); i++ {
-		t[i] = &((*s)[i])
+func copyParamPtrs(s secretDescriptors) *[]*string {
+	t := make([]*string, len(s))
+
+	for i := 0; i < len(s); i++ {
+		//t[i] = &((*s)[i])
+		t[i] = &(s[i].secfullpath)
 	}
 	return &t
 }
+
+type secDesc struct {
+	secfullpath  string
+	secshortname string
+	sectype      apicorev1.SecretType
+}
+type secretDescriptors []secDesc
+
+func (i *secretDescriptors) Set(value string) error {
+	sectuple := strings.Split(value, ":")
+	// if user didn't specify secret type apply default type Opaque
+	if len(sectuple) < 2 {
+		sectuple = append(sectuple, string(apicorev1.SecretTypeOpaque))
+	}
+	*i = append(*i, secDesc{
+		secfullpath:  sectuple[0],
+		sectype:      apicorev1.SecretType(sectuple[1]),
+		secshortname: getSecretNameFromParam(sectuple[0]),
+	})
+	return nil
+}
+func (i *secretDescriptors) String() string {
+	str := ""
+	for _, v := range *i {
+		str += (v.secfullpath + ",")
+	}
+	return str
+}
+
+var params secretDescriptors
 
 func main() {
 
@@ -102,19 +143,17 @@ func main() {
 		err    error
 	)
 
-	paramList, kubeconfig, namespace, sectype := "", "", "default", string(apicorev1.SecretTypeOpaque)
-	flag.StringVar(&paramList, "params", paramList, "comma separated list of param names")
+	kubeconfig, namespace := "", "default"
+	flag.Var(&params, "param", `param name and optional secret type separated by colon e.g.
+										/vault/mydockerlogin:kubernetes.io/dockercfg`)
 	flag.StringVar(&kubeconfig, "kubeconfig", kubeconfig, "kubeconfig file")
 	flag.StringVar(&namespace, "namespace", namespace, "target secret namespace")
-	flag.StringVar(&sectype, "type", sectype, "kubernetes secret type for (applies to the whole list of params)")
 	flag.Parse()
 
-	if paramList == "" {
+	if len(params) == 0 {
 		log.Fatal("No param names provided!")
 	}
-	secretType := apicorev1.SecretType(sectype)
-	ssmParams := strings.Split(paramList, ",")
-
+	
 	// Parse kubeconfig flag, KUBECONFIG env var or inClusterConfig
 	if kubeconfig == "" {
 		kubeconfig = os.Getenv("KUBECONFIG")
@@ -133,8 +172,8 @@ func main() {
 	ssmSvc := ssm.New(awsSession)
 
 	log.Print("Processing Parameters")
-	// aws takes a slice of *string. Need to migrate ssmParams
-	paramPtrs := copyParamPtrs(&ssmParams)
+	// aws takes a slice of *string. take their addresses from params
+	paramPtrs := copyParamPtrs(params)
 	log.Println("fetching from AWS:")
 	for i, p := range *paramPtrs {
 		log.Printf("  param buffer[%d]:[%s]\n", i, *p)
@@ -149,9 +188,9 @@ func main() {
 	//           { key_21: val_21, key22: val_22 }
 	// }
 	paramVals := make(map[string]map[string][]byte)
-	// iterate over values, parse the and validate
+	// iterate over values, parse them and validate
 	for _, p := range paramResponse.Parameters {
-		//extract the last part of the name path to becode the secret name
+		//extract the last part of the name path to decode the secret name
 		key := getSecretNameFromParam(*p.Name)
 		tmp := *parseParamVal(*p.Value)
 		paramVals[key] = tmp
@@ -159,7 +198,7 @@ func main() {
 
 	for k, v := range paramVals {
 
-		err = crateSecret(client, namespace, k, &v, secretType)
+		err = createSecret(client, namespace, k, &v, params)
 		if err != nil {
 			// change this line if you want to support ignoring failed secret creation
 			log.Fatalf("Error creating secret. Terminating")
