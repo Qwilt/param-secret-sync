@@ -17,7 +17,7 @@ The build system has been adopted from the awsome Tim Hockin and the Kubernetes 
 +  `-kubeconfig`  (or KUBECONFIG env var) kubeconfig file (needed for out of cluster execution)
 +  `-namespace` 
     	target secret namespace (default "default")
-+ `-param` 
++  `-param` 
     	a full path of a ParameterStore secret, optionally followed by a colon and a kuberentes secret type
 		e.g. -param /vault/mydockerlogin:kubernetes.io/dockercfg
 		if secret type is omitted type is set to Opaque
